@@ -89,9 +89,9 @@ jobs:
       - name: Setup node from node version file
         uses: ./
         with:
-          node-version-file: '__tests__/data/.nvmrc'
+          node-version-file: '__tests__/data/.node-version'
       - name: Verify node
-        run: __tests__/verify-node.sh 14
+        run: __tests__/verify-node.sh 12
 
   node-dist:
     runs-on: ${{ matrix.os }}
