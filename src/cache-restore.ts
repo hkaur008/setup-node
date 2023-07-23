@@ -4,33 +4,61 @@ import * as glob from '@actions/glob';
 import path from 'path';
 import fs from 'fs';
 
-import {State, Outputs} from './constants';
+import {State} from './constants';
 import {
-  getCacheDirectoryPath,
+  getCacheDirectories,
   getPackageManagerInfo,
+  repoHasYarnBerryManagedDependencies,
   PackageManagerInfo
 } from './cache-utils';
 
-export const restoreCache = async (packageManager: string) => {
+export const restoreCache = async (
+  packageManager: string,
+  cacheDependencyPath: string
+) => {
   const packageManagerInfo = await getPackageManagerInfo(packageManager);
   if (!packageManagerInfo) {
     throw new Error(`Caching for '${packageManager}' is not supported`);
   }
   const platform = process.env.RUNNER_OS;
 
-  const cachePath = await getCacheDirectoryPath(
+  const cachePaths = await getCacheDirectories(
     packageManagerInfo,
-    packageManager
+    cacheDependencyPath
   );
-  const lockFilePath = findLockFile(packageManagerInfo);
+  core.saveState(State.CachePaths, cachePaths);
+  const lockFilePath = cacheDependencyPath
+    ? cacheDependencyPath
+    : findLockFile(packageManagerInfo);
   const fileHash = await glob.hashFiles(lockFilePath);
 
-  const primaryKey = `node-cache-${platform}-${packageManager}-${fileHash}`;
+  if (!fileHash) {
+    throw new Error(
+      'Some specified paths were not resolved, unable to cache dependencies.'
+    );
+  }
+
+  const keyPrefix = `node-cache-${platform}-${packageManager}`;
+  const primaryKey = `${keyPrefix}-${fileHash}`;
   core.debug(`primary key is ${primaryKey}`);
 
   core.saveState(State.CachePrimaryKey, primaryKey);
 
-  const cacheKey = await cache.restoreCache([cachePath], primaryKey);
+  const isManagedByYarnBerry = await repoHasYarnBerryManagedDependencies(
+    packageManagerInfo,
+    cacheDependencyPath
+  );
+  let cacheKey: string | undefined;
+  if (isManagedByYarnBerry) {
+    core.info(
+      'All dependencies are managed locally by yarn3, the previous cache can be used'
+    );
+    cacheKey = await cache.restoreCache(cachePaths, primaryKey, [keyPrefix]);
+  } else {
+    cacheKey = await cache.restoreCache(cachePaths, primaryKey);
+  }
+
+  core.setOutput('cache-hit', Boolean(cacheKey));
 
   if (!cacheKey) {
     core.info(`${packageManager} cache is not found`);
@@ -42,8 +70,9 @@ export const restoreCache = async (packageManager: string) => {
 };
 
 const findLockFile = (packageManager: PackageManagerInfo) => {
-  let lockFiles = packageManager.lockFilePatterns;
+  const lockFiles = packageManager.lockFilePatterns;
   const workspace = process.env.GITHUB_WORKSPACE!;
+
   const rootContent = fs.readdirSync(workspace);
 
   const lockFile = lockFiles.find(item => rootContent.includes(item));
